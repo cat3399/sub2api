@@ -1167,6 +1167,7 @@ export default {
       testConnection: '测试连接',
       reAuthorize: '重新授权',
       refreshToken: '刷新令牌',
+      refreshCodexQuota: '刷新 Codex 额度',
       noAccountsYet: '暂无账号',
       createFirstAccount: '添加 AI 平台账号以开始使用 API 网关。',
       tokenRefreshed: 'Token 刷新成功',

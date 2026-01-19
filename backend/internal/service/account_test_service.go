@@ -68,6 +68,95 @@ func NewAccountTestService(
 	}
 }
 
+// RefreshOpenAICodexQuota triggers a minimal upstream request for an OpenAI OAuth account
+// and persists the returned x-codex-* usage headers into account.extra.
+//
+// This is intended for admins to manually refresh Codex quota display in the UI.
+func (s *AccountTestService) RefreshOpenAICodexQuota(ctx context.Context, accountID int64) (*OpenAICodexUsageSnapshot, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	if account == nil {
+		return nil, errors.New("account not found")
+	}
+
+	// Codex usage headers are only available for OpenAI OAuth (ChatGPT internal API).
+	if !account.IsOpenAIOAuth() {
+		return nil, errors.New("codex quota refresh is only supported for OpenAI OAuth accounts")
+	}
+
+	authToken := account.GetOpenAIAccessToken()
+	if strings.TrimSpace(authToken) == "" {
+		return nil, errors.New("no access token available")
+	}
+
+	// Use a Codex model by default, minimal input.
+	payload := createOpenAITestPayload(openai.DefaultTestModel, true)
+	payloadBytes, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", chatgptCodexAPIURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Host = "chatgpt.com"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("accept", "text/event-stream")
+
+	// Mirror the gateway behavior to maximize the chance of getting x-codex-* headers.
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("originator", "codex_cli_rs")
+
+	// Some upstream behaviors depend on UA; use a Codex-like UA by default.
+	req.Header.Set("User-Agent", "codex_cli_rs/0.1.2")
+
+	if chatgptAccountID := account.GetChatGPTAccountID(); strings.TrimSpace(chatgptAccountID) != "" {
+		req.Header.Set("chatgpt-account-id", chatgptAccountID)
+	}
+
+	// Respect per-account custom UA (if provided) after setting our default.
+	if customUA := account.GetOpenAIUserAgent(); strings.TrimSpace(customUA) != "" {
+		req.Header.Set("User-Agent", customUA)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	snapshot := extractCodexUsageHeaders(resp.Header)
+	if snapshot == nil {
+		// Drain a bit of body for debugging stability (optional).
+		_, _ = io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, errors.New("upstream did not return Codex usage headers (x-codex-*)")
+	}
+
+	updates := buildCodexUsageExtraUpdates(snapshot)
+	if len(updates) == 0 {
+		return nil, errors.New("codex usage snapshot contained no updates")
+	}
+
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		return nil, err
+	}
+
+	return snapshot, nil
+}
+
 func (s *AccountTestService) validateUpstreamBaseURL(raw string) (string, error) {
 	if s.cfg == nil {
 		return "", errors.New("config is not available")
