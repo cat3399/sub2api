@@ -531,6 +531,9 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 			}
 		}
 	} else if account.Platform == service.PlatformAntigravity {
+		shouldClearMissingProjectIDError := account.Status == service.StatusError &&
+			strings.Contains(account.ErrorMessage, "missing_project_id:")
+
 		tokenInfo, err := h.antigravityOAuthService.RefreshAccountToken(c.Request.Context(), account)
 		if err != nil {
 			response.ErrorFrom(c, err)
@@ -544,30 +547,9 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 			}
 		}
 
-		// 如果 project_id 获取失败，先更新凭证，再标记账户为 error
-		if tokenInfo.ProjectIDMissing {
-			// 先更新凭证
-			_, updateErr := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-				Credentials: newCredentials,
-			})
-			if updateErr != nil {
-				response.InternalError(c, "Failed to update credentials: "+updateErr.Error())
-				return
-			}
-			// 标记账户为 error
-			if setErr := h.adminService.SetAccountError(c.Request.Context(), accountID, "missing_project_id: 账户缺少project id，可能无法使用Antigravity"); setErr != nil {
-				response.InternalError(c, "Failed to set account error: "+setErr.Error())
-				return
-			}
-			response.Success(c, gin.H{
-				"message": "Token refreshed but project_id is missing, account marked as error",
-				"warning": "missing_project_id",
-			})
-			return
-		}
-
-		// 成功获取到 project_id，如果之前是 missing_project_id 错误则清除
-		if account.Status == service.StatusError && strings.Contains(account.ErrorMessage, "missing_project_id:") {
+		// project_id 缺失不应阻断 token 刷新（部分账户类型可能没有 / 或上游临时未返回）。
+		// 对于历史遗留的 missing_project_id 错误，刷新成功后自动清除以恢复可调度状态。
+		if shouldClearMissingProjectIDError {
 			if _, clearErr := h.adminService.ClearAccountError(c.Request.Context(), accountID); clearErr != nil {
 				response.InternalError(c, "Failed to clear account error: "+clearErr.Error())
 				return

@@ -237,19 +237,41 @@ func (s *AntigravityOAuthService) RefreshAccountToken(ctx context.Context, accou
 		tokenInfo.Email = existingEmail
 	}
 
-	// 每次刷新都调用 LoadCodeAssist 获取 project_id
+	existingProjectID := strings.TrimSpace(account.GetCredential("project_id"))
+
+	// 每次刷新都调用 LoadCodeAssist 获取 project_id（部分账户类型可能没有 / 可能临时失败）
 	client := antigravity.NewClient(proxyURL)
 	loadResp, _, err := client.LoadCodeAssist(ctx, tokenInfo.AccessToken)
-	if err != nil || loadResp == nil || loadResp.CloudAICompanionProject == "" {
-		// LoadCodeAssist 失败或返回空，保留原有 project_id，标记缺失
-		existingProjectID := strings.TrimSpace(account.GetCredential("project_id"))
-		tokenInfo.ProjectID = existingProjectID
-		tokenInfo.ProjectIDMissing = true
-	} else {
-		tokenInfo.ProjectID = loadResp.CloudAICompanionProject
-	}
+	applyAntigravityProjectID(tokenInfo, existingProjectID, loadResp, err)
 
 	return tokenInfo, nil
+}
+
+func applyAntigravityProjectID(tokenInfo *AntigravityTokenInfo, existingProjectID string, loadResp *antigravity.LoadCodeAssistResponse, loadErr error) {
+	if tokenInfo == nil {
+		return
+	}
+
+	existingProjectID = strings.TrimSpace(existingProjectID)
+
+	projectID := ""
+	if loadErr == nil && loadResp != nil {
+		projectID = strings.TrimSpace(loadResp.CloudAICompanionProject)
+	}
+
+	switch {
+	case projectID != "":
+		tokenInfo.ProjectID = projectID
+		tokenInfo.ProjectIDMissing = false
+	case existingProjectID != "":
+		// LoadCodeAssist 失败/返回空：保留已有 project_id；
+		// 避免把临时失败误判成缺失。
+		tokenInfo.ProjectID = existingProjectID
+		tokenInfo.ProjectIDMissing = false
+	default:
+		// 没有新 project_id，也没有历史值：标记缺失（仅用于提示，不能作为致命错误）。
+		tokenInfo.ProjectIDMissing = true
+	}
 }
 
 // BuildAccountCredentials 构建账户凭证

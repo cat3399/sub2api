@@ -61,9 +61,9 @@ func (r *AntigravityTokenRefresher) Refresh(ctx context.Context, account *Accoun
 		}
 	}
 
-	// 如果 project_id 获取失败，返回 credentials 但同时返回错误让账户被标记
+	// project_id 仅用于部分扩展能力（如配额/模型列表），缺失不应阻断 token 刷新与正常转发。
 	if tokenInfo.ProjectIDMissing {
-		return newCredentials, fmt.Errorf("missing_project_id: 账户缺少project id，可能无法使用Antigravity")
+		fmt.Printf("[AntigravityTokenRefresher] Account %d refreshed but project_id is missing; continuing without it\n", account.ID)
 	}
 
 	return newCredentials, nil
