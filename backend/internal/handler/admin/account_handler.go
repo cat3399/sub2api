@@ -627,6 +627,30 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 	response.Success(c, dto.AccountFromService(updatedAccount))
 }
 
+// RefreshCodexQuota triggers a minimal OpenAI upstream request and stores x-codex-* usage headers
+// into the account's extra field (Codex quota snapshot).
+//
+// POST /api/v1/admin/accounts/:id/refresh-codex-quota
+func (h *AccountHandler) RefreshCodexQuota(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	snapshot, err := h.accountTestService.RefreshOpenAICodexQuota(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{
+		"message":    "Codex quota refreshed",
+		"updated_at": snapshot.UpdatedAt,
+		"snapshot":   snapshot,
+	})
+}
+
 // GetStats handles getting account statistics
 // GET /api/v1/admin/accounts/:id/stats
 func (h *AccountHandler) GetStats(c *gin.Context) {

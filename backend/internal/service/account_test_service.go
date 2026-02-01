@@ -17,6 +17,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -66,6 +67,101 @@ func NewAccountTestService(
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 	}
+}
+
+// RefreshOpenAICodexQuota triggers a minimal upstream request for an OpenAI OAuth account
+// and persists the returned x-codex-* usage headers into account.extra.
+//
+// This is intended for admins to manually refresh Codex quota display in the UI.
+func (s *AccountTestService) RefreshOpenAICodexQuota(ctx context.Context, accountID int64) (*OpenAICodexUsageSnapshot, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, ErrAccountNotFound
+	}
+
+	// Codex usage headers are only available for OpenAI OAuth (ChatGPT internal API).
+	if !account.IsOpenAIOAuth() {
+		return nil, infraerrors.BadRequest(
+			"CODEX_QUOTA_UNSUPPORTED_ACCOUNT",
+			"codex quota refresh is only supported for OpenAI OAuth accounts",
+		)
+	}
+
+	authToken := strings.TrimSpace(account.GetOpenAIAccessToken())
+	if authToken == "" {
+		return nil, infraerrors.BadRequest("OPENAI_OAUTH_MISSING_ACCESS_TOKEN", "no access token available")
+	}
+
+	// Use a Codex model by default, minimal input.
+	payload := createOpenAITestPayload(openai.DefaultTestModel, true)
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, infraerrors.InternalServer("OPENAI_TEST_PAYLOAD_MARSHAL_FAILED", "failed to build upstream request payload").WithCause(err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptCodexAPIURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return nil, infraerrors.InternalServer("OPENAI_UPSTREAM_REQUEST_BUILD_FAILED", "failed to create upstream request").WithCause(err)
+	}
+
+	// Required: set Host for ChatGPT API (must use req.Host, not Header.Set).
+	req.Host = "chatgpt.com"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("accept", "text/event-stream")
+
+	// Mirror the gateway behavior to maximize the chance of getting x-codex-* headers.
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("originator", "codex_cli_rs")
+
+	// Some upstream behaviors depend on UA; use a Codex-like UA by default.
+	req.Header.Set("User-Agent", "codex_cli_rs/0.1.2")
+
+	if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
+		req.Header.Set("chatgpt-account-id", chatgptAccountID)
+	}
+
+	// Respect per-account custom UA (if provided) after setting our default.
+	if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
+		req.Header.Set("User-Agent", customUA)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
+	if err != nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_UPSTREAM_REQUEST_FAILED", "upstream request failed").WithCause(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_UPSTREAM_ERROR", "upstream returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	snapshot := ParseCodexRateLimitHeaders(resp.Header)
+	if snapshot == nil {
+		// Drain a bit of body for debugging stability (optional).
+		_, _ = io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, infraerrors.New(http.StatusBadGateway, "CODEX_USAGE_HEADERS_MISSING", "upstream did not return Codex usage headers (x-codex-*)")
+	}
+
+	updates := buildCodexUsageExtraUpdates(snapshot)
+	if len(updates) == 0 {
+		return nil, infraerrors.InternalServer("CODEX_USAGE_SNAPSHOT_EMPTY", "codex usage snapshot contained no updates")
+	}
+
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		return nil, err
+	}
+
+	return snapshot, nil
 }
 
 func (s *AccountTestService) validateUpstreamBaseURL(raw string) (string, error) {

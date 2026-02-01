@@ -1825,53 +1825,9 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 		return
 	}
 
-	// Convert snapshot to map for merging into Extra
-	updates := make(map[string]any)
-
-	// Save raw primary/secondary fields for debugging/tracing
-	if snapshot.PrimaryUsedPercent != nil {
-		updates["codex_primary_used_percent"] = *snapshot.PrimaryUsedPercent
-	}
-	if snapshot.PrimaryResetAfterSeconds != nil {
-		updates["codex_primary_reset_after_seconds"] = *snapshot.PrimaryResetAfterSeconds
-	}
-	if snapshot.PrimaryWindowMinutes != nil {
-		updates["codex_primary_window_minutes"] = *snapshot.PrimaryWindowMinutes
-	}
-	if snapshot.SecondaryUsedPercent != nil {
-		updates["codex_secondary_used_percent"] = *snapshot.SecondaryUsedPercent
-	}
-	if snapshot.SecondaryResetAfterSeconds != nil {
-		updates["codex_secondary_reset_after_seconds"] = *snapshot.SecondaryResetAfterSeconds
-	}
-	if snapshot.SecondaryWindowMinutes != nil {
-		updates["codex_secondary_window_minutes"] = *snapshot.SecondaryWindowMinutes
-	}
-	if snapshot.PrimaryOverSecondaryPercent != nil {
-		updates["codex_primary_over_secondary_percent"] = *snapshot.PrimaryOverSecondaryPercent
-	}
-	updates["codex_usage_updated_at"] = snapshot.UpdatedAt
-
-	// Normalize to canonical 5h/7d fields
-	if normalized := snapshot.Normalize(); normalized != nil {
-		if normalized.Used5hPercent != nil {
-			updates["codex_5h_used_percent"] = *normalized.Used5hPercent
-		}
-		if normalized.Reset5hSeconds != nil {
-			updates["codex_5h_reset_after_seconds"] = *normalized.Reset5hSeconds
-		}
-		if normalized.Window5hMinutes != nil {
-			updates["codex_5h_window_minutes"] = *normalized.Window5hMinutes
-		}
-		if normalized.Used7dPercent != nil {
-			updates["codex_7d_used_percent"] = *normalized.Used7dPercent
-		}
-		if normalized.Reset7dSeconds != nil {
-			updates["codex_7d_reset_after_seconds"] = *normalized.Reset7dSeconds
-		}
-		if normalized.Window7dMinutes != nil {
-			updates["codex_7d_window_minutes"] = *normalized.Window7dMinutes
-		}
+	updates := buildCodexUsageExtraUpdates(snapshot)
+	if len(updates) == 0 {
+		return
 	}
 
 	// Update account's Extra field asynchronously

@@ -160,6 +160,22 @@ export async function getUsage(id: number): Promise<AccountUsageInfo> {
 }
 
 /**
+ * Refresh Codex quota snapshot (OpenAI OAuth accounts only)
+ * Triggers a minimal upstream request to fetch x-codex-* headers and persists them to account.extra.
+ * @param id - Account ID
+ */
+export async function refreshCodexQuota(
+  id: number
+): Promise<{ message: string; updated_at?: string; snapshot?: Record<string, any> }> {
+  const { data } = await apiClient.post<{
+    message: string
+    updated_at?: string
+    snapshot?: Record<string, any>
+  }>(`/admin/accounts/${id}/refresh-codex-quota`)
+  return data
+}
+
+/**
  * Clear account rate limit status
  * @param id - Account ID
  * @returns Success confirmation
@@ -356,6 +372,7 @@ export const accountsAPI = {
   toggleStatus,
   testAccount,
   refreshCredentials,
+  refreshCodexQuota,
   getStats,
   clearError,
   getUsage,
